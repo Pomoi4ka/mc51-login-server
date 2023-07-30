@@ -1,3 +1,4 @@
+#include <random>
 #include <iostream>
 #include <thread>
 #include <vector>
@@ -6,6 +7,10 @@
 #include <cstring>
 #include <errno.h>
 #include <arpa/inet.h>
+#include <assert.h>
+
+#include <openssl/rsa.h>
+#include <openssl/x509.h>
 
 #define PROTO_VER 51
 
@@ -40,6 +45,11 @@ public:
         this->fd = fd;
         readBuffer.resize(4096);
         writeBuffer.resize(4096);
+    }
+
+    bool isAbleToRead()
+    {
+        return rB.avail || !isStreamClosed();
     }
 
     bool isStreamClosed()
@@ -172,6 +182,15 @@ std::string BufStream::read<std::string>()
     return s;
 }
 
+template <>
+void BufStream::write<std::string>(std::string s)
+{
+    writebe<uint16_t>(s.size());
+    for (const auto& i: s) {
+        writebe<uint16_t>(i);
+    }
+}
+
 class ClientHandler: private BufStream {
 private:
     int sock;
@@ -212,7 +231,7 @@ public:
         pushStr("9999");
         pushStr("-1");
         message.resize(message.size() - 1);
-        
+
         write<uint8_t>(0xff);  // Kick packet
         writeV<short>(message);
         flush();
@@ -226,7 +245,45 @@ public:
         read<std::string>(); // host
         readbe<int>(); // port
 
-        printf("%s trying to login\n", name.c_str());
+        write<uint8_t>(0xfd);
+        write<std::string>("-"); // server id
+
+        BIGNUM* bn = BN_new();
+        int bits = 1200;
+        if (BN_set_word(bn, 65537) != 1) {
+            throw "Failed to set RSA exponent";
+        }
+
+        RSA *rsa = RSA_new();
+
+        if (RSA_generate_key_ex(rsa, bits, bn, NULL) != 1) {
+            RSA_free(rsa);
+            throw "Could not generate RSA key";
+        }
+
+        unsigned char* rsaData = NULL;
+        int rsaLength = i2d_RSA_PUBKEY(rsa, &rsaData);
+
+        if (rsaLength < 0) {
+            throw "Could not get RSA public key";
+        }
+
+        writebe<short>(rsaLength);
+        write(rsaData, rsaLength);
+        OPENSSL_free(rsaData);
+
+        std::random_device r;
+        uint32_t vToken = r();
+        writebe<short>(sizeof(vToken));
+        write<uint32_t>(vToken);
+        flush();
+        RSA_free(rsa);
+
+        for (int i = 0; i < 1024 && isAbleToRead(); ++i) {
+            printf("0x%.2x ", read<uint8_t>());
+            if ((i + 1) % 16 == 0) printf("\n");
+        }
+        fflush(stdout);
     }
 
     static void run(int sock)
@@ -315,7 +372,7 @@ int main(int argc, char* argv[])
             fprintf(stderr, "ERROR: could not accept(): %s\n",
                     strerror(errno));
         }
-        std::thread(ClientHandler::run, csock).detach();        
+        std::thread(ClientHandler::run, csock).detach();
     }
 
     close(sock);
