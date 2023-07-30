@@ -9,6 +9,7 @@
 
 class BufStream {
 private:
+    bool isClosed;
     int fd;
     std::vector<uint8_t> readBuffer;
     struct {
@@ -33,9 +34,49 @@ private:
     }
 public:
     BufStream(int fd) {
+        isClosed = false;
         this->fd = fd;
         readBuffer.resize(4096);
         writeBuffer.resize(4096);
+    }
+
+    bool isStreamClosed()
+    {
+        return isClosed;
+    }
+
+    bool flush(int all = false)
+    {
+        do {
+            int result = ::write(fd, &writeBuffer[wB.pos - wB.avail], wB.avail);
+            if (result < 0) {
+                if (result == EPIPE) isClosed = true;
+                return false;
+            }
+            wB.avail -= result;
+        } while (all && wB.avail);
+
+        return true;
+    }
+
+    int write(const void* buf, size_t n)
+    {
+        ssize_t pos = 0;
+
+        while ((size_t) pos < n) {
+            if (wB.pos == writeBuffer.size()) wB.pos = 0;
+            if (wB.avail == writeBuffer.size() &&
+                !flush()) {
+                return 0;
+            }
+            size_t avail = writeBuffer.size() - wB.avail;
+            if (avail > n - pos) avail = n - pos;
+            memcpy(&writeBuffer[wB.pos], &((char*)buf)[pos], avail);
+            wB.pos += avail;
+            wB.avail += avail;
+            pos += avail;
+        }
+        return 1;
     }
 
     ssize_t read(void* buf, size_t n)
@@ -43,7 +84,10 @@ public:
         ssize_t pos = 0;
 
         while ((size_t) pos < n) {
-            if (!rB.avail && fetch() <= 0) return pos;
+            if (!rB.avail && fetch() <= 0) {
+                isClosed = true;
+                return pos;
+            }
             size_t cnt;
             if (n - pos > rB.avail) {
                 cnt = rB.avail;
@@ -56,6 +100,61 @@ public:
             rB.avail -= cnt;
         }
         return pos;
+    }
+
+    template <typename T>
+    T read()
+    {
+        T t;
+        read(&t, sizeof(T));
+        return t;
+    }
+
+    template <typename T>
+    T readbe()
+    {
+        T v = read<T>();
+        uint8_t* t = (uint8_t*)&v;
+        for (size_t i = 0; i < sizeof(T)/2; ++i) {
+            size_t oi = sizeof(T) - i - 1;
+            uint8_t tmp = t[i];
+            t[i] = t[oi];
+            t[oi] = tmp;
+        }
+        return v;
+    }
+
+    template <typename T>
+    void write(T t)
+    {
+        write(&t, sizeof(T));
+    }
+
+    template <typename T>
+    void writebe(T t)
+    {
+        uint8_t *p = (uint8_t*)&t;
+        for (size_t i = 0; i < sizeof(T)/2; ++i) {
+             size_t oi = sizeof(T) - i - 1;
+             uint8_t tmp = p[i];
+             p[i] = p[oi];
+             p[oi] = tmp;
+        }
+        write(t);
+    }
+
+    template <typename S, typename T>
+    void writeV(std::vector<T> v, bool sizeInBytes = false, bool sendBigEndianed = true)
+    {
+        if (sizeInBytes)
+            writebe<S>(v.size()*sizeof(v[0]));
+        else
+            writebe<S>(v.size());
+
+        for (auto& i: v) {
+             sendBigEndianed ?
+                 writebe(i) : write(i);
+        }
     }
 };
 
@@ -71,16 +170,56 @@ public:
 
     int getPacketId()
     {
-        int packetId = 0;
-        read(&packetId, 1);
-        return packetId;
+        return read<uint8_t>();
+    }
+
+    void sendStatus()
+    {
+        if (read<uint8_t>() != 1) {
+            return;
+        }
+
+        std::vector<uint16_t> message;
+        auto pushChar = [&message] (unsigned char val) {
+            message.push_back(val);
+        };
+
+        pushChar(0xa7);
+        pushChar('1');
+        pushChar(0);
+
+        auto pushStr = [&message, pushChar] (std::string s) {
+            for (auto& c: s) pushChar(c);
+            pushChar(0);
+        };
+        pushStr("51");
+        pushStr("1.4.7");
+        pushStr("Proxy says hello");
+        pushStr("9999");
+        pushStr("-1");
+        message.resize(message.size() - 1);
+        
+        write<uint8_t>(0xff);  // Kick packet
+        writeV<short>(message);
+        flush();
     }
 
     static void run(int sock)
     {
         ClientHandler handler(sock);
 
-        printf("packetId: %d\n", handler.getPacketId());
+        uint8_t packetId = handler.getPacketId();
+        switch (packetId) {
+        case 0xfe: {
+            handler.sendStatus();
+        } break;
+        case 0x02: {
+            printf("Handshake\n");
+        } break;
+        default:
+            printf("Invalid initial packet 0x%x\n", packetId);
+            break;
+        }
         close(sock);
     }
 };
