@@ -7,6 +7,8 @@
 #include <errno.h>
 #include <arpa/inet.h>
 
+#define PROTO_VER 51
+
 class BufStream {
 private:
     bool isClosed;
@@ -158,6 +160,18 @@ public:
     }
 };
 
+template <>
+std::string BufStream::read<std::string>()
+{
+    std::string s;
+    auto s_len = readbe<uint16_t>();
+    for (auto i = 0; i < s_len; ++i) {
+        s.push_back(readbe<uint16_t>());
+    }
+
+    return s;
+}
+
 class ClientHandler: private BufStream {
 private:
     int sock;
@@ -192,7 +206,7 @@ public:
             for (auto& c: s) pushChar(c);
             pushChar(0);
         };
-        pushStr("51");
+        pushStr("" + PROTO_VER);
         pushStr("1.4.7");
         pushStr("Proxy says hello");
         pushStr("9999");
@@ -202,6 +216,17 @@ public:
         write<uint8_t>(0xff);  // Kick packet
         writeV<short>(message);
         flush();
+    }
+
+    void handshake()
+    {
+        if (read<uint8_t>() != PROTO_VER) return;
+
+        auto name = read<std::string>(); // username
+        read<std::string>(); // host
+        readbe<int>(); // port
+
+        printf("%s trying to login\n", name.c_str());
     }
 
     static void run(int sock)
@@ -215,6 +240,7 @@ public:
         } break;
         case 0x02: {
             printf("Handshake\n");
+            handler.handshake();
         } break;
         default:
             printf("Invalid initial packet 0x%x\n", packetId);
