@@ -245,6 +245,13 @@ void BufStream::write<std::string>(std::string s)
     }
 }
 
+// TODO: make login/register command
+// TODO: introduce database capatibility with old authme
+// TODO: make proxy connect to main server
+// TODO: config for the program
+// TODO: omit some packets which can lead to coodinate leaks
+// TODO: user notification system and ability to get individual login history
+
 class ClientHandler: private BufStream {
 private:
     int sock;
