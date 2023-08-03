@@ -1,3 +1,4 @@
+#include <memory>
 #include <random>
 #include <iostream>
 #include <thread>
@@ -11,10 +12,50 @@
 
 #include <openssl/rsa.h>
 #include <openssl/x509.h>
+#include <openssl/evp.h>
 
 #define PROTO_VER 51
 
+class Crypter {
+private:
+    EVP_CIPHER_CTX* enc;
+    EVP_CIPHER_CTX* dec;
+public:
+    Crypter(std::vector<uint8_t> sharedSecret) {
+        enc = EVP_CIPHER_CTX_new();
+        EVP_CIPHER_CTX_init(enc);
+        EVP_EncryptInit(enc, EVP_aes_128_cfb8(), sharedSecret.data(), sharedSecret.data());
+        dec = EVP_CIPHER_CTX_new();
+        EVP_CIPHER_CTX_init(dec);
+        EVP_DecryptInit(dec, EVP_aes_128_cfb8(), sharedSecret.data(), sharedSecret.data());
+    }
+
+    ~Crypter() {
+        EVP_CIPHER_CTX_free(enc);
+        EVP_CIPHER_CTX_free(dec);
+    }
+
+    void encrypt(void *dst, const void* src, int inlen)
+    {
+        int outlen;
+        if (EVP_EncryptUpdate(enc, (unsigned char*) dst, &outlen,
+                              (const unsigned char*) src, inlen) <= 0) {
+            throw "OpenSSL exception";
+        }
+    }
+
+    void decrypt(void *dst, const void* src, int inlen)
+    {
+        int outlen;
+        if (EVP_DecryptUpdate(dec, (unsigned char*) dst, &outlen,
+                              (const unsigned char*) src, inlen) <= 0) {
+            throw "OpenSSL exception";
+        }
+    }
+};
+
 class BufStream {
+    std::unique_ptr<Crypter> crypter;
 private:
     bool isClosed;
     int fd;
@@ -47,6 +88,11 @@ public:
         writeBuffer.resize(4096);
     }
 
+    void setEncryption(std::vector<uint8_t> sharedSecret)
+    {
+        this->crypter = std::unique_ptr<Crypter>(new Crypter(sharedSecret));
+    }
+
     bool isAbleToRead()
     {
         return rB.avail || !isStreamClosed();
@@ -62,7 +108,7 @@ public:
         do {
             int result = ::write(fd, &writeBuffer[wB.pos - wB.avail], wB.avail);
             if (result < 0) {
-                if (result == EPIPE) isClosed = true;
+                if (errno == EPIPE) isClosed = true;
                 return false;
             }
             wB.avail -= result;
@@ -83,7 +129,11 @@ public:
             }
             size_t avail = writeBuffer.size() - wB.avail;
             if (avail > n - pos) avail = n - pos;
-            memcpy(&writeBuffer[wB.pos], &((char*)buf)[pos], avail);
+            if (crypter) {
+                crypter->encrypt(&writeBuffer[wB.pos], &((char*)buf)[pos], avail);
+            } else {
+                memcpy(&writeBuffer[wB.pos], &((char*)buf)[pos], avail);
+            }
             wB.pos += avail;
             wB.avail += avail;
             pos += avail;
@@ -106,7 +156,11 @@ public:
             } else {
                 cnt = n - pos;
             }
-            memcpy((char*)buf + pos, &readBuffer[rB.pos], cnt);
+            if (crypter) {
+                crypter->decrypt((char*)buf + pos, &readBuffer[rB.pos], cnt);
+            } else {
+                memcpy((char*)buf + pos, &readBuffer[rB.pos], cnt);
+            }
             pos += cnt;
             rB.pos += cnt;
             rB.avail -= cnt;
@@ -194,6 +248,8 @@ void BufStream::write<std::string>(std::string s)
 class ClientHandler: private BufStream {
 private:
     int sock;
+    int peid;
+    std::string name;
 public:
     ClientHandler(int sock):
         BufStream(sock)
@@ -237,11 +293,22 @@ public:
         flush();
     }
 
-    void handshake()
+    bool expectPacket(int pid)
     {
-        if (read<uint8_t>() != PROTO_VER) return;
+        int apid = getPacketId();
+        if (pid != apid) {
+            fprintf(stderr, "channel %d: expected packet 0x%x but got 0x%x\n", sock, pid, apid);
+            return false;
+        }
 
-        auto name = read<std::string>(); // username
+        return true;
+    }
+
+    bool handshake()
+    {
+        if (read<uint8_t>() != PROTO_VER) return false;
+
+        name = read<std::string>(); // username
         read<std::string>(); // host
         readbe<int>(); // port
 
@@ -250,7 +317,7 @@ public:
 
         BIGNUM* bn = BN_new();
         int bits = 1200;
-        if (BN_set_word(bn, 65537) != 1) {
+        if (BN_set_word(bn, RSA_F4) != 1) {
             throw "Failed to set RSA exponent";
         }
 
@@ -265,6 +332,7 @@ public:
         int rsaLength = i2d_RSA_PUBKEY(rsa, &rsaData);
 
         if (rsaLength < 0) {
+            RSA_free(rsa);
             throw "Could not get RSA public key";
         }
 
@@ -277,13 +345,138 @@ public:
         writebe<short>(sizeof(vToken));
         write<uint32_t>(vToken);
         flush();
-        RSA_free(rsa);
 
-        for (int i = 0; i < 1024 && isAbleToRead(); ++i) {
-            printf("0x%.2x ", read<uint8_t>());
-            if ((i + 1) % 16 == 0) printf("\n");
+        std::vector<uint8_t> sharedSecret;
+        std::vector<uint8_t> verifyToken;
+        std::vector<uint8_t> decryptedSharedSecret;
+
+        if (!expectPacket(0xfc)) {
+            goto ret;
         }
-        fflush(stdout);
+        sharedSecret.resize(readbe<uint16_t>());
+        read(sharedSecret.data(), sharedSecret.size());
+        verifyToken.resize(readbe<uint16_t>());
+        read(verifyToken.data(), verifyToken.size());
+
+        {
+            std::vector<uint8_t> decryptedVToken;
+            decryptedVToken.resize(RSA_size(rsa));
+            int len = RSA_private_decrypt(verifyToken.size(), verifyToken.data(),
+                                          decryptedVToken.data(), rsa, RSA_PKCS1_PADDING);
+
+            if (len <= 0) {
+                fprintf(stderr, "channel %d: could not decrypt verify token\n", sock);
+                goto ret;
+            }
+            decryptedVToken.resize(len);
+
+            if (decryptedVToken.size() != sizeof(vToken) ||
+                *(uint32_t*)decryptedVToken.data() != vToken) {
+                fprintf(stderr, "channel %d: verify token is incorrect\n", sock);
+                goto ret;
+            }
+        }
+
+        decryptedSharedSecret.resize(RSA_size(rsa));
+        {
+            int len = RSA_private_decrypt(sharedSecret.size(), sharedSecret.data(),
+                                          decryptedSharedSecret.data(), rsa, RSA_PKCS1_PADDING);
+            if (len <= 0) {
+                fprintf(stderr, "channel %d: could not decrypt shared secret\n", sock);
+                goto ret;
+            }
+            decryptedSharedSecret.resize(len);
+            /* Encryption respnose */
+            write<uint8_t>(0xfc);
+            write<uint16_t>(0);
+            write<uint16_t>(0);
+
+            setEncryption(decryptedSharedSecret);
+        }
+
+        flush();
+        if (!expectPacket(0xcd)) {
+            goto ret;
+        }
+        read<uint8_t>();
+        RSA_free(rsa);
+        return true;
+    ret:
+        RSA_free(rsa);
+        return false;
+    }
+
+    void handle_client()
+    {
+        write<uint8_t>(0x01); // login packet
+        peid = ((unsigned) rand()) & 0xfffffffu;
+        write<uint32_t>(peid);
+        write<std::string>("default");
+        write<uint8_t>(0); // gamemode
+        write<uint8_t>(0); // dimension
+        write<uint8_t>(3); // difficulty
+        write<uint8_t>(0); // not used
+        write<uint8_t>(20); // max players
+        flush();
+
+        write<uint8_t>(0xca); // player abilities
+        write<uint8_t>(0); // flags
+        write<uint8_t>(12); // fly speed
+        write<uint8_t>(25); // walking speed
+
+        write<uint8_t>(0x04); // time update
+        write<long>(0);
+        write<long>(0);
+
+        write<uint8_t>(0x0d); // player pos and look
+        writebe<double>(0);
+        writebe<double>(0);
+        writebe<double>(1.8);
+        writebe<double>(0);
+        writebe<float>(0);
+        writebe<float>(0);
+        write<uint8_t>(0);
+
+        write<uint8_t>(0xc9); // list item
+        write<std::string>(name);
+        write<bool>(true);
+        writebe<short>(50);
+
+        write<uint8_t>(0x68); // set window items
+        write<uint8_t>(0); // window id
+        writebe<short>(45); // number of slots
+        for (int i = 0; i < 45; ++i) {
+            writebe<short>(-1);
+        }
+
+        // clearing the cursor
+
+        write<uint8_t>(0x67); // set slot
+        write<uint8_t>(-1);
+        writebe<short>(-1);
+        writebe<short>(-1);
+
+        write<uint8_t>(0x67); // set slot
+        write<uint8_t>(0);
+        writebe<short>(0);
+        writebe<short>(-1);
+
+
+        write<uint8_t>(0x38); // map chunk bulk
+        int n = 16;
+        writebe<short>(n);
+        writebe<int>(0);
+        write<uint8_t>(1);
+        for (int i = 0; i < n; ++i) {
+            int x = (i % 4) - 2;
+            int y = (i/4) - 2;
+            writebe<int>(x);
+            writebe<int>(y);
+            writebe<short>(0);
+            writebe<short>(0);
+        }
+        flush();
+        sleep(3423);
     }
 
     static void run(int sock)
@@ -297,7 +490,9 @@ public:
         } break;
         case 0x02: {
             printf("Handshake\n");
-            handler.handshake();
+            if (handler.handshake()) {
+                handler.handle_client();
+            }
         } break;
         default:
             printf("Invalid initial packet 0x%x\n", packetId);
@@ -316,6 +511,7 @@ int main(int argc, char* argv[])
         return *argv++;
     };
     const char* progname = nextArg();
+    (void) progname;
 
     while (true) {
         const char* arg = nextArg();
