@@ -9,241 +9,11 @@
 #include <errno.h>
 #include <arpa/inet.h>
 #include <assert.h>
+#include <poll.h>
 
-#include <openssl/rsa.h>
-#include <openssl/x509.h>
-#include <openssl/evp.h>
+#include "BufStream.hpp"
 
 #define PROTO_VER 51
-
-class Crypter {
-private:
-    EVP_CIPHER_CTX* enc;
-    EVP_CIPHER_CTX* dec;
-public:
-    Crypter(std::vector<uint8_t> sharedSecret) {
-        enc = EVP_CIPHER_CTX_new();
-        EVP_CIPHER_CTX_init(enc);
-        EVP_EncryptInit(enc, EVP_aes_128_cfb8(), sharedSecret.data(), sharedSecret.data());
-        dec = EVP_CIPHER_CTX_new();
-        EVP_CIPHER_CTX_init(dec);
-        EVP_DecryptInit(dec, EVP_aes_128_cfb8(), sharedSecret.data(), sharedSecret.data());
-    }
-
-    ~Crypter() {
-        EVP_CIPHER_CTX_free(enc);
-        EVP_CIPHER_CTX_free(dec);
-    }
-
-    void encrypt(void *dst, const void* src, int inlen)
-    {
-        int outlen;
-        if (EVP_EncryptUpdate(enc, (unsigned char*) dst, &outlen,
-                              (const unsigned char*) src, inlen) <= 0) {
-            throw "OpenSSL exception";
-        }
-    }
-
-    void decrypt(void *dst, const void* src, int inlen)
-    {
-        int outlen;
-        if (EVP_DecryptUpdate(dec, (unsigned char*) dst, &outlen,
-                              (const unsigned char*) src, inlen) <= 0) {
-            throw "OpenSSL exception";
-        }
-    }
-};
-
-class BufStream {
-    std::unique_ptr<Crypter> crypter;
-private:
-    bool isClosed;
-    int fd;
-    std::vector<uint8_t> readBuffer;
-    struct {
-        size_t pos;
-        size_t avail;
-    } rB;
-    std::vector<uint8_t> writeBuffer;
-    struct {
-        size_t pos;
-        size_t avail;
-    } wB;
-
-    int fetch()
-    {
-        if (rB.pos >= readBuffer.size()) rB.pos = 0;
-        size_t n = readBuffer.size() - rB.pos + rB.avail;
-
-        int result = ::read(fd, &readBuffer[rB.pos + rB.avail], n);
-
-        rB.avail += result;
-        return result;
-    }
-public:
-    BufStream(int fd) {
-        isClosed = false;
-        this->fd = fd;
-        readBuffer.resize(4096);
-        writeBuffer.resize(4096);
-    }
-
-    void setEncryption(std::vector<uint8_t> sharedSecret)
-    {
-        this->crypter = std::unique_ptr<Crypter>(new Crypter(sharedSecret));
-    }
-
-    bool isAbleToRead()
-    {
-        return rB.avail || !isStreamClosed();
-    }
-
-    bool isStreamClosed()
-    {
-        return isClosed;
-    }
-
-    bool flush(int all = false)
-    {
-        do {
-            int result = ::write(fd, &writeBuffer[wB.pos - wB.avail], wB.avail);
-            if (result < 0) {
-                if (errno == EPIPE) isClosed = true;
-                return false;
-            }
-            wB.avail -= result;
-        } while (all && wB.avail);
-
-        return true;
-    }
-
-    int write(const void* buf, size_t n)
-    {
-        ssize_t pos = 0;
-
-        while ((size_t) pos < n) {
-            if (wB.pos == writeBuffer.size()) wB.pos = 0;
-            if (wB.avail == writeBuffer.size() &&
-                !flush()) {
-                return 0;
-            }
-            size_t avail = writeBuffer.size() - wB.avail;
-            if (avail > n - pos) avail = n - pos;
-            if (crypter) {
-                crypter->encrypt(&writeBuffer[wB.pos], &((char*)buf)[pos], avail);
-            } else {
-                memcpy(&writeBuffer[wB.pos], &((char*)buf)[pos], avail);
-            }
-            wB.pos += avail;
-            wB.avail += avail;
-            pos += avail;
-        }
-        return 1;
-    }
-
-    ssize_t read(void* buf, size_t n)
-    {
-        ssize_t pos = 0;
-
-        while ((size_t) pos < n) {
-            if (!rB.avail && fetch() <= 0) {
-                isClosed = true;
-                return pos;
-            }
-            size_t cnt;
-            if (n - pos > rB.avail) {
-                cnt = rB.avail;
-            } else {
-                cnt = n - pos;
-            }
-            if (crypter) {
-                crypter->decrypt((char*)buf + pos, &readBuffer[rB.pos], cnt);
-            } else {
-                memcpy((char*)buf + pos, &readBuffer[rB.pos], cnt);
-            }
-            pos += cnt;
-            rB.pos += cnt;
-            rB.avail -= cnt;
-        }
-        return pos;
-    }
-
-    template <typename T>
-    T read()
-    {
-        T t;
-        read(&t, sizeof(T));
-        return t;
-    }
-
-    template <typename T>
-    T readbe()
-    {
-        T v = read<T>();
-        uint8_t* t = (uint8_t*)&v;
-        for (size_t i = 0; i < sizeof(T)/2; ++i) {
-            size_t oi = sizeof(T) - i - 1;
-            uint8_t tmp = t[i];
-            t[i] = t[oi];
-            t[oi] = tmp;
-        }
-        return v;
-    }
-
-    template <typename T>
-    void write(T t)
-    {
-        write(&t, sizeof(T));
-    }
-
-    template <typename T>
-    void writebe(T t)
-    {
-        uint8_t *p = (uint8_t*)&t;
-        for (size_t i = 0; i < sizeof(T)/2; ++i) {
-             size_t oi = sizeof(T) - i - 1;
-             uint8_t tmp = p[i];
-             p[i] = p[oi];
-             p[oi] = tmp;
-        }
-        write(t);
-    }
-
-    template <typename S, typename T>
-    void writeV(std::vector<T> v, bool sizeInBytes = false, bool sendBigEndianed = true)
-    {
-        if (sizeInBytes)
-            writebe<S>(v.size()*sizeof(v[0]));
-        else
-            writebe<S>(v.size());
-
-        for (auto& i: v) {
-             sendBigEndianed ?
-                 writebe(i) : write(i);
-        }
-    }
-};
-
-template <>
-std::string BufStream::read<std::string>()
-{
-    std::string s;
-    auto s_len = readbe<uint16_t>();
-    for (auto i = 0; i < s_len; ++i) {
-        s.push_back(readbe<uint16_t>());
-    }
-
-    return s;
-}
-
-template <>
-void BufStream::write<std::string>(std::string s)
-{
-    writebe<uint16_t>(s.size());
-    for (const auto& i: s) {
-        writebe<uint16_t>(i);
-    }
-}
 
 // TODO: make login/register command
 // TODO: introduce database capatibility with old authme
@@ -413,6 +183,11 @@ public:
         return false;
     }
 
+    void waitForPacket(int packetId)
+    {
+        
+    }
+    
     void handle_client()
     {
         write<uint8_t>(0x01); // login packet
@@ -483,7 +258,11 @@ public:
             writebe<short>(0);
         }
         flush();
-        sleep(3423);
+
+        write<uint8_t>(0x03); // chat message
+        write<std::string>("\xa7\x65To register write \xa7l/reg <command>");
+        
+        waitForPacket(0x03);
     }
 
     static void run(int sock)
