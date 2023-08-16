@@ -1,3 +1,4 @@
 build
 *.o
 codegen/packets
+codegen/gen

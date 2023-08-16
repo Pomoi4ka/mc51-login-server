@@ -20,7 +20,16 @@ void BufStream::write<std::string>(std::string s)
 {
     writebe<uint16_t>(s.size());
     for (const auto& i: s) {
-        writebe<uint16_t>(i);
+        writebe<uint16_t>((unsigned char) i);
+    }
+}
+
+template <>
+void BufStream::write<std::wstring>(std::wstring s)
+{
+    writebe<uint16_t>(s.size());
+    for (const auto& i: s) {
+        writebe<uint16_t>((uint16_t) i);
     }
 }
 

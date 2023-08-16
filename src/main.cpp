@@ -12,6 +12,7 @@
 #include <poll.h>
 
 #include "BufStream.hpp"
+#include "DataClasses.hpp"
 
 #define PROTO_VER 51
 
@@ -212,8 +213,8 @@ public:
 
         write<uint8_t>(0x0d); // player pos and look
         writebe<double>(0);
-        writebe<double>(0);
-        writebe<double>(1.8);
+        writebe<double>(2000000);
+        writebe<double>(2000001.8);
         writebe<double>(0);
         writebe<float>(0);
         writebe<float>(0);
@@ -260,8 +261,14 @@ public:
         flush();
 
         write<uint8_t>(0x03); // chat message
-        write<std::string>("\xa7\x65To register write \xa7l/reg <command>");
+        write<std::wstring>(L"\xa7\x65To register write \xa7l/reg <password> <confirmPassword>");
+        flush();
+
+        write<uint8_t>(0x03); // chat message
+        write<std::wstring>(L"Я сос биба");
+        flush();
         
+        sleep(50);
         waitForPacket(0x03);
     }
 

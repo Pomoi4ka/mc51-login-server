@@ -75,13 +75,13 @@ public:
         write(t);
     }
 
-    template <typename S, typename T>
-    void writeV(std::vector<T> v, bool sizeInBytes = false, bool sendBigEndianed = true)
+    template <typename LenType, typename ElemType>
+    void writeV(std::vector<ElemType> v, bool sizeInBytes = false, bool sendBigEndianed = true)
     {
         if (sizeInBytes)
-            writebe<S>(v.size()*sizeof(v[0]));
+            writebe<LenType>(v.size()*sizeof(v[0]));
         else
-            writebe<S>(v.size());
+            writebe<LenType>(v.size());
 
         for (auto& i: v) {
              sendBigEndianed ?
@@ -89,14 +89,14 @@ public:
         }
     }
 
-    template <typename S, typename T>
-    std::vector<T> readV()
+    template <typename LenType, typename ElemType>
+    std::vector<ElemType> readV()
     {
-        std::vector<T> v;
-        S count = readbe<S>();
+        std::vector<ElemType> v;
+        LenType count = readbe<LenType>();
 
         for (auto i = 0; i < count; ++i) {
-            v.push_back(readbe<T>());
+            v.push_back(readbe<ElemType>());
         }
 
         return v;
