@@ -6,6 +6,21 @@
 #include <memory>
 #include <vector>
 #include <cstdlib>
+#include <string>
+
+class BufStreamException {
+public:
+    enum Status {
+        STATUS_CONNECTION_CLOSED,
+        STATUS_TIMEOUT,
+    };
+    BufStreamException(Status status);
+    std::string getError() const;
+    Status getStatus() const;
+    friend std::ostream& operator<<(std::ostream& os, const BufStreamException& ex);
+private:
+     Status status;
+};
 
 class BufStream {
     std::unique_ptr<Crypter> crypter;
@@ -32,13 +47,14 @@ public:
     bool isStreamClosed();
     bool flush(int all = false);
     int write(const void* buf, size_t n);
-    ssize_t read(void* buf, size_t n);
+    size_t read(void* buf, size_t n);
 
     template <typename T>
     T read()
     {
         T t;
-        read(&t, sizeof(T));
+        if (read(&t, sizeof(T)) < sizeof(T) || isStreamClosed())
+            throw BufStreamException(BufStreamException::Status::STATUS_CONNECTION_CLOSED);
         return t;
     }
 
@@ -59,7 +75,8 @@ public:
     template <typename T>
     void write(T t)
     {
-        write(&t, sizeof(T));
+        if (!write(&t, sizeof(T)) && isStreamClosed())
+            throw BufStreamException(BufStreamException::Status::STATUS_CONNECTION_CLOSED);
     }
 
     template <typename T>
@@ -102,5 +119,12 @@ public:
         return v;
     }
 };
+
+template <>
+void BufStream::write<std::string>(std::string s);
+template<>
+std::string BufStream::read<std::string>();
+template <>
+void BufStream::write<std::wstring>(std::wstring s);
 
 #endif // BUF_STREAM_HPP_

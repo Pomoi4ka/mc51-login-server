@@ -190,9 +190,9 @@ public:
         flush();
 
         write<uint8_t>(0xca); // player abilities
-        write<uint8_t>(0); // flags
-        write<uint8_t>(12); // fly speed
-        write<uint8_t>(25); // walking speed
+        write<uint8_t>(2); // flags
+        write<uint8_t>(0); // fly speed
+        write<uint8_t>(0); // walking speed
 
         write<uint8_t>(0x04); // time update
         write<long>(0);

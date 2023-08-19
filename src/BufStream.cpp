@@ -3,6 +3,33 @@
 #include <unistd.h>
 #include <string>
 
+BufStreamException::BufStreamException(Status status)
+{
+    this->status = status;
+}
+
+std::string BufStreamException::getError() const
+{
+    switch (status) {
+    case STATUS_CONNECTION_CLOSED:
+        return "Connection Closed";
+    case STATUS_TIMEOUT:
+        return "Timed out";
+    }
+    return "Unreachable";
+}
+
+BufStreamException::Status BufStreamException::getStatus() const
+{
+    return status;
+}
+
+std::ostream& operator<<(std::ostream& os, const BufStreamException& ex)
+{
+    os << ex.getError();
+    return os;
+}
+
 template<>
 std::string BufStream::read<std::string>()
 {
@@ -57,9 +84,9 @@ int BufStream::write(const void* buf, size_t n)
     return 1;
 }
 
-ssize_t BufStream::read(void* buf, size_t n)
+size_t BufStream::read(void* buf, size_t n)
 {
-    ssize_t pos = 0;
+    size_t pos = 0;
 
     while ((size_t) pos < n) {
         if (!rB.avail && fetch() <= 0) {
@@ -101,6 +128,7 @@ BufStream::BufStream(int fd)
     this->fd = fd;
     readBuffer.resize(4096);
     writeBuffer.resize(4096);
+    wB.avail = wB.pos = rB.avail = rB.pos = 0;
 }
 
 void BufStream::setEncryption(std::vector<uint8_t> sharedSecret)
