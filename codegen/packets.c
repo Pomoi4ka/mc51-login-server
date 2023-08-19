@@ -270,6 +270,7 @@ typedef enum {
     METADATA,
     OBJECTDATA,
     STRUCTARRAY,
+    CLASSARRAY,
     END,
 } FieldType;
 
@@ -302,7 +303,12 @@ TEMPStr fieldtype_to_cstr(const Field* f)
         TEMPStr str = {0};
         sprintf(str.data, "std::vector<%s>", f->argName);
         return str;
-    } 
+    }
+    case CLASSARRAY: {
+        TEMPStr str = {0};
+        sprintf(str.data, "std::vector<%s>", f->argName);
+        return str;
+    }
     }
     fprintf(stderr, "ERROR: %d is not implemented\n", f->type);
     assert(0);
@@ -389,33 +395,45 @@ const Field *(fields[]) = {
     [PACKET_EXPLOSION]                     = (Field[]){{DOUBLE, "x"}, {DOUBLE, "y"}, {DOUBLE, "z"}, {FLOAT, "radius"},
                                                        {INT, "recordsCount"}, {STRUCTARRAY, "records", EXPLOSION_RECORD_STRUCT,
                                                                                "recordsCount"}, {END}},
-    [PACKET_SOUND_OR_PARTICLE]             = (Field[]){{END}},
-    [PACKET_NAMED_SOUND_EFFECT]            = (Field[]){{END}},
-    [PACKET_CHANGE_GAME_STATE]             = (Field[]){{END}},
-    [PACKET_SPAWN_GLOBAL_ENTITY]           = (Field[]){{END}},
-    [PACKET_OPEN_WINDOW]                   = (Field[]){{END}},
-    [PACKET_CLOSE_WINDOW]                  = (Field[]){{END}},
-    [PACKET_CLICK_WINDOW]                  = (Field[]){{END}},
-    [PACKET_SET_SLOT]                      = (Field[]){{END}},
-    [PACKET_SET_WINDOW_ITEMS]              = (Field[]){{END}},
-    [PACKET_UPDATE_WINDOW_PROPERTY]        = (Field[]){{END}},
-    [PACKET_CONFIRM_TRANSACTION]           = (Field[]){{END}},
-    [PACKET_CREATIVE_INVENTORY_ACTION]     = (Field[]){{END}},
-    [PACKET_ENCHANT_ITEM]                  = (Field[]){{END}},
-    [PACKET_UPDATE_SIGN]                   = (Field[]){{END}},
-    [PACKET_ITEM_DATA]                     = (Field[]){{END}},
-    [PACKET_UPDATE_TILE_ENTITY]            = (Field[]){{END}},
-    [PACKET_INCREMENT_STATISTIC]           = (Field[]){{END}},
-    [PACKET_PLAYER_LIST_ITEM]              = (Field[]){{END}},
-    [PACKET_PLAYER_ABILITIES]              = (Field[]){{END}},
-    [PACKET_TAB_COMPLETE]                  = (Field[]){{END}},
-    [PACKET_CLIENT_SETTINGS]               = (Field[]){{END}},
-    [PACKET_CLIENT_STATUSES]               = (Field[]){{END}},
-    [PACKET_PLUGIN_MESSAGE]                = (Field[]){{END}},
-    [PACKET_ENCRYPTION_KEY_RESPONSE]       = (Field[]){{END}},
-    [PACKET_ENCRYPTION_KEY_REQUEST]        = (Field[]){{END}},
-    [PACKET_SERVER_LIST_PING]              = (Field[]){{END}},
-    [PACKET_DISCONNECT]                    = (Field[]){{END}},
+    [PACKET_SOUND_OR_PARTICLE]             = (Field[]){{INT, "EffID"}, {INT, "x"}, {BYTE, "y"}, {INT, "z"}, {INT, "data"},
+                                                       {BOOLEAN, "notRelVol"}, {END}},
+    [PACKET_NAMED_SOUND_EFFECT]            = (Field[]){{STRING, "soundName"}, {INT, "epX"}, {INT, "epY"}, {INT, "epZ"},
+                                                       {FLOAT, "volume"}, {BYTE, "pitch"}, {END}},
+    [PACKET_CHANGE_GAME_STATE]             = (Field[]){{BYTE, "reason"}, {BYTE, "gamemode"}, {END}},
+    [PACKET_SPAWN_GLOBAL_ENTITY]           = (Field[]){{INT, "entityID"}, {BYTE, "type"}, {INT, "x"}, {INT, "y"}, {INT, "z"},
+                                                       {END}},
+    [PACKET_OPEN_WINDOW]                   = (Field[]){{BYTE, "windowID"}, {BYTE, "inventoryType"}, {STRING, "windowTitle"},
+                                                       {BYTE, "slotsNum"}, {END}},
+    [PACKET_CLOSE_WINDOW]                  = (Field[]){{BYTE, "windowID"}, {END}},
+    [PACKET_CLICK_WINDOW]                  = (Field[]){{BYTE, "windowID"}, {SHORT, "slot"}, {BYTE, "mouseButton"},
+                                                       {SHORT, "actionNumb"}, {BOOLEAN, "shift"}, {SLOT, "clickedItem"}, {END}},
+    [PACKET_SET_SLOT]                      = (Field[]){{BYTE, "windowID"}, {SHORT, "slot"}, {SLOT, "slotData"}, {END}},
+    [PACKET_SET_WINDOW_ITEMS]              = (Field[]){{BYTE, "windowID"}, {SHORT, "count"},
+                                                       {CLASSARRAY, "slotData", "Slot", "count"},
+                                                       {END}},
+    [PACKET_UPDATE_WINDOW_PROPERTY]        = (Field[]){{BYTE, "windowID"}, {SHORT, "property"}, {SHORT, "value"}, {END}},
+    [PACKET_CONFIRM_TRANSACTION]           = (Field[]){{BYTE, "windowID"}, {SHORT, "actionNum"}, {BOOLEAN, "accepted"}, {END}},
+    [PACKET_CREATIVE_INVENTORY_ACTION]     = (Field[]){{SHORT, "slot"}, {SLOT, "clickedItem"}, {END}},
+    [PACKET_ENCHANT_ITEM]                  = (Field[]){{BYTE, "windowID"}, {BYTE, "enchantment"}, {END}},
+    [PACKET_UPDATE_SIGN]                   = (Field[]){{INT, "x"}, {SHORT, "y"}, {INT, "z"},
+                                                       {STRING, "text1"}, {STRING, "text2"}, {STRING, "text3"},
+                                                       {STRING, "text4"}, {END}},
+    [PACKET_ITEM_DATA]                     = (Field[]){{SHORT, "itemType"}, {SHORT, "itemId"}, {BYTEARRAY, "text"}, {END}},
+    [PACKET_UPDATE_TILE_ENTITY]            = (Field[]){{INT, "x"}, {SHORT, "y"}, {INT, "z"}, {BYTE, "action"},
+                                                       {BYTEARRAY, "data"}, {END}},
+    [PACKET_INCREMENT_STATISTIC]           = (Field[]){{INT, "statisticID"}, {BYTE, "amount"}, {END}},
+    [PACKET_PLAYER_LIST_ITEM]              = (Field[]){{STRING, "playerName"}, {BOOLEAN, "online"}, {SHORT, "ping"}, {END}},
+    [PACKET_PLAYER_ABILITIES]              = (Field[]){{BYTE, "flags"}, {BYTE, "flyingSpeed"}, {BYTE, "walkingSpeed"}, {END}},
+    [PACKET_TAB_COMPLETE]                  = (Field[]){{STRING, "text"}, {END}},
+    [PACKET_CLIENT_SETTINGS]               = (Field[]){{STRING, "locale"}, {BYTE, "viewDistance"}, {BYTE, "chatFlags"},
+                                                       {BYTE, "difficulty"}, {BOOLEAN, "showCape"}, {END}},
+    [PACKET_CLIENT_STATUSES]               = (Field[]){{BYTE, "payload"}, {END}},
+    [PACKET_PLUGIN_MESSAGE]                = (Field[]){{STRING, "channel"}, {BYTEARRAY, "data"}, {END}},
+    [PACKET_ENCRYPTION_KEY_RESPONSE]       = (Field[]){{BYTEARRAY, "sharedSecret"}, {BYTEARRAY, "verifyToken"}, {END}},
+    [PACKET_ENCRYPTION_KEY_REQUEST]        = (Field[]){{STRING, "serverID"}, {BYTEARRAY, "publicKey"},
+                                                       {BYTEARRAY, "verifyToken"}, {END}},
+    [PACKET_SERVER_LIST_PING]              = (Field[]){{BYTE, "magic"}, {END}},
+    [PACKET_DISCONNECT]                    = (Field[]){{STRING, "reason"}, {END}},
 };
 
 char* shift(int *argc, char*** argv)
@@ -556,6 +574,10 @@ void generate_methods_defs_for_class(FILE* out, const char* namespace,
                     "    for (auto i = 0; i < this->%s; ++i)\n"
                     "        this->%s[i].get(stream);\n",
                     f->name, f->argName2, f->argName2, f->name);
+        else if (f->type == CLASSARRAY)
+            fprintf(out, "    for (auto i = 0; i < this->%s; ++i)\n"
+                    "        this->%s.push_back(stream);\n",
+                    f->argName2, f->name);
         else
             fprintf(out, "    this->%s = stream.read%s();\n", f->name, io_func_prefix_for_type(f).data);
     }
@@ -574,13 +596,13 @@ void generate_methods_defs_for_class(FILE* out, const char* namespace,
         else if (f->type == BYTEARRAY_NAMED)
             fprintf(out, "    stream.write(this->%s.data(), this->%s.size());\n",
                     f->name, f->name);            
-        else if (f->type == STRUCTARRAY)
+        else if (f->type == STRUCTARRAY || f->type == CLASSARRAY)
             fprintf(out, "    for (auto& n: this->%s)\n"
                     "        n.send(stream);\n", f->name);
         else
             fprintf(out, "    stream.write%s(this->%s);\n", io_func_prefix_for_type(f).data, f->name);
     }
-    fprintf(out, "}\n\n");
+    fprintf(out, "    stream.flush();\n}\n\n");
 }
 
 int main(int argc, char** argv)
@@ -656,13 +678,36 @@ int main(int argc, char** argv)
     fprintf(out, "#endif // PACKETS_HPP_\n");
     if (decloutput) fclose(out);
     if (defoutput) out = fopen(defoutput, "w");
-
+    
     fprintf(out, GENERATED_MARK "\n\n", progname);
+    
     if (decloutput) {
         const char* fname = decloutput + strlen(decloutput);
         while (fname > decloutput && fname[-1] != '/') fname--;
         fprintf(out, "#include <%s>\n\n", fname);
     }
+
+    fprintf(out, "void Packets::" CHUNK_META_INFORMATION_STRUCT "::send(" BUFSTREAM_CLASSNAME "& stream) const\n{\n"
+            "    stream.writebe<int>(chunkX);\n"
+            "    stream.writebe<int>(chunkZ);\n"
+            "    stream.writebe<uint16_t>(primBitMap);\n"
+            "    stream.writebe<uint16_t>(addBitMap);\n}\n\n");
+
+    fprintf(out, "void Packets::" CHUNK_META_INFORMATION_STRUCT "::get(" BUFSTREAM_CLASSNAME "& stream)\n{\n"
+            "    chunkX = stream.readbe<int>();\n"
+            "    chunkZ = stream.readbe<int>();\n"
+            "    primBitMap = stream.readbe<uint16_t>();\n"
+            "    addBitMap = stream.readbe<uint16_t>();\n}\n\n");
+
+    fprintf(out, "void Packets::" EXPLOSION_RECORD_STRUCT "::send(" BUFSTREAM_CLASSNAME "& stream) const\n{\n"
+            "    stream.write<uint8_t>(x);\n"
+            "    stream.write<uint8_t>(y);\n"
+            "    stream.write<uint8_t>(z);\n}\n\n");
+
+    fprintf(out, "void Packets::" EXPLOSION_RECORD_STRUCT "::get(" BUFSTREAM_CLASSNAME "& stream)\n{\n"
+            "    x = stream.read<uint8_t>();\n"
+            "    y = stream.read<uint8_t>();\n"
+            "    z = stream.read<uint8_t>();\n}\n\n");
     
     for (size_t i = 0; i < ARRAY_LEN(packetIds); ++i) {
         generate_methods_defs_for_class

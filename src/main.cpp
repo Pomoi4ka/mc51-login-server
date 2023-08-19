@@ -13,6 +13,7 @@
 
 #include "BufStream.hpp"
 #include "DataClasses.hpp"
+#include <Packets.hpp>
 
 #define PROTO_VER 51
 
@@ -84,15 +85,11 @@ public:
 
     bool handshake()
     {
-        if (read<uint8_t>() != PROTO_VER) return false;
+        Packets::PacketHandshake h(*this);
 
-        name = read<std::string>(); // username
-        read<std::string>(); // host
-        readbe<int>(); // port
-
-        write<uint8_t>(0xfd);
-        write<std::string>("-"); // server id
-
+        if (h.protocolVer != PROTO_VER) return 0;
+        name = h.username;
+        
         BIGNUM* bn = BN_new();
         int bits = 1200;
         if (BN_set_word(bn, RSA_F4) != 1) {
@@ -113,72 +110,62 @@ public:
             RSA_free(rsa);
             throw "Could not get RSA public key";
         }
-
-        writebe<short>(rsaLength);
-        write(rsaData, rsaLength);
-        OPENSSL_free(rsaData);
-
         std::random_device r;
         uint32_t vToken = r();
-        writebe<short>(sizeof(vToken));
-        write<uint32_t>(vToken);
-        flush();
 
-        std::vector<uint8_t> sharedSecret;
-        std::vector<uint8_t> verifyToken;
-        std::vector<uint8_t> decryptedSharedSecret;
+        Packets::PacketEncryptionKeyRequest("-", std::vector<uint8_t>(rsaData, rsaData + rsaLength),
+                                            std::vector<uint8_t>((char*) &vToken,
+                                                                 ((char*)&vToken) + sizeof(vToken)))
+            .send(*this);
+
+        OPENSSL_free(rsaData);
 
         if (!expectPacket(0xfc)) {
             goto ret;
         }
-        sharedSecret.resize(readbe<uint16_t>());
-        read(sharedSecret.data(), sharedSecret.size());
-        verifyToken.resize(readbe<uint16_t>());
-        read(verifyToken.data(), verifyToken.size());
 
         {
-            std::vector<uint8_t> decryptedVToken;
-            decryptedVToken.resize(RSA_size(rsa));
-            int len = RSA_private_decrypt(verifyToken.size(), verifyToken.data(),
-                                          decryptedVToken.data(), rsa, RSA_PKCS1_PADDING);
+        std::vector<uint8_t> decryptedSharedSecret;
+        std::vector<uint8_t> decryptedVToken;
+        
+        Packets::PacketEncryptionKeyResponse re(*this);
+        decryptedVToken.resize(RSA_size(rsa));
+        int len = RSA_private_decrypt(re.verifyToken.size(), re.verifyToken.data(),
+                                      decryptedVToken.data(), rsa, RSA_PKCS1_PADDING);
 
-            if (len <= 0) {
-                fprintf(stderr, "channel %d: could not decrypt verify token\n", sock);
-                goto ret;
-            }
-            decryptedVToken.resize(len);
+        if (len <= 0) {
+            fprintf(stderr, "channel %d: could not decrypt verify token\n", sock);
+            goto ret;
+        }
+        decryptedVToken.resize(len);
 
-            if (decryptedVToken.size() != sizeof(vToken) ||
-                *(uint32_t*)decryptedVToken.data() != vToken) {
-                fprintf(stderr, "channel %d: verify token is incorrect\n", sock);
-                goto ret;
-            }
+        if (decryptedVToken.size() != sizeof(vToken) ||
+            *(uint32_t*)decryptedVToken.data() != vToken) {
+            fprintf(stderr, "channel %d: verify token is incorrect\n", sock);
+            goto ret;
         }
 
         decryptedSharedSecret.resize(RSA_size(rsa));
-        {
-            int len = RSA_private_decrypt(sharedSecret.size(), sharedSecret.data(),
-                                          decryptedSharedSecret.data(), rsa, RSA_PKCS1_PADDING);
-            if (len <= 0) {
-                fprintf(stderr, "channel %d: could not decrypt shared secret\n", sock);
-                goto ret;
-            }
-            decryptedSharedSecret.resize(len);
-            /* Encryption respnose */
-            write<uint8_t>(0xfc);
-            write<uint16_t>(0);
-            write<uint16_t>(0);
-
-            setEncryption(decryptedSharedSecret);
+        len = RSA_private_decrypt(re.sharedSecret.size(), re.sharedSecret.data(),
+                                  decryptedSharedSecret.data(), rsa, RSA_PKCS1_PADDING);
+        if (len <= 0) {
+            fprintf(stderr, "channel %d: could not decrypt shared secret\n", sock);
+            goto ret;
         }
+        decryptedSharedSecret.resize(len);
 
-        flush();
+        Packets::PacketEncryptionKeyResponse({}, {}).send(*this);
+        
+        
+        setEncryption(decryptedSharedSecret);
+
         if (!expectPacket(0xcd)) {
             goto ret;
         }
-        read<uint8_t>();
+        Packets::PacketClientStatuses cs(*this);
         RSA_free(rsa);
         return true;
+        }
     ret:
         RSA_free(rsa);
         return false;

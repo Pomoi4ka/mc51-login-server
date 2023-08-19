@@ -9,7 +9,7 @@ build: src/main.o src/BufStream.o src/DataClasses.o src/Crypter.o codegen/gen/Pa
 	$(CXX) $(LIBS) -o $@ src/main.o src/BufStream.o src/Crypter.o codegen/gen/Packets.o src/DataClasses.o
 
 src/main.o: src/main.cpp src/BufStream.hpp src/Crypter.hpp codegen/gen/Packets.hpp
-	$(CXX) $(CFLAGS) -c -o $@ src/main.cpp
+	$(CXX) $(CFLAGS) -c -o $@ src/main.cpp -Icodegen/gen/ -Isrc/
 
 src/BufStream.o: src/BufStream.cpp src/BufStream.hpp src/Crypter.hpp
 	$(CXX) $(CFLAGS) -c -o $@ src/BufStream.cpp
@@ -23,7 +23,7 @@ src/DataClasses.o: src/DataClasses.cpp src/DataClasses.hpp src/BufStream.hpp
 codegen/gen/Packets.o: codegen/gen/Packets.cpp codegen/gen/Packets.hpp src/BufStream.hpp
 	$(CXX) $(CFLAGS) -Wno-unused-parameter -c -o $@ codegen/gen/Packets.cpp -I./codegen/gen -I./src
 
-codegen/gen/Packets.cpp codegen/gen/Packets.hpp: codegen/packets codegen/gen
+codegen/gen/Packets.cpp, codegen/gen/Packets.hpp: codegen/packets codegen/gen
 	codegen/packets -declo codegen/gen/Packets.hpp -defo codegen/gen/Packets.cpp
 
 codegen/packets: codegen/packets.c
