@@ -63,7 +63,7 @@ typedef enum {
     PACKET_ENTITY_EFFECT,
     PACKET_REMOVE_ENTITY_EFFECT,
     PACKET_SET_EXPERIENCE,
-    PACKET_CHUNK_DATA,
+    PACKET_CHUNK_DATA = 0x33,
     PACKET_MULTIBLOCK_CHANGE,
     PACKET_BLOCK_CHANGE,
     PACKET_BLOCK_ACTION,
@@ -262,6 +262,7 @@ typedef enum {
     DOUBLE,
     LONG,
     STRING,
+    WSTRING,
     SLOT,
     BYTEARRAY,
     BYTEARRAY4,
@@ -291,6 +292,7 @@ TEMPStr fieldtype_to_cstr(const Field* f)
     case DOUBLE:     return TEMPORATE("double");
     case LONG:       return TEMPORATE("long");
     case STRING:     return TEMPORATE("std::string");
+    case WSTRING:    return TEMPORATE("std::wstring");
     case BYTEARRAY_NAMED:
     case BYTEARRAY4:
     case BYTEARRAY:  return TEMPORATE("std::vector<uint8_t>");
@@ -317,11 +319,11 @@ TEMPStr fieldtype_to_cstr(const Field* f)
 const Field *(fields[]) = {
     [PACKET_KEEPALIVE]                     = (Field[]){{INT, "keepaliveID"}, {END}},
     [PACKET_LOGIN]                         = (Field[]){{INT, "entityID"}, {STRING, "levelType"},
-                                              {BYTE, "gamemode"}, {BYTE, "dimension"},
+                                                       {BYTE, "gamemode"}, {BYTE, "dimension"}, {BYTE, "difficulty"},
                                               {BYTE, NULL}, {BYTE, "maxPlayers"}, {END}},
     [PACKET_HANDSHAKE]                     = (Field[]){{BYTE, "protocolVer"}, {STRING, "username"},
                                               {STRING, "serverHost"}, {INT, "serverPort"}, {END}},
-    [PACKET_CHAT_MESSAGE]                  = (Field[]){{STRING, "message"}, {END}},
+    [PACKET_CHAT_MESSAGE]                  = (Field[]){{WSTRING, "message"}, {END}},
     [PACKET_TIME_UPDATE]                   = (Field[]){{LONG, "ageOfWorld"}, {LONG, "timeOfDay"}, {END}},
     [PACKET_ENTITY_EQUIPMENT]              = (Field[]){{INT, "entityID"}, {SHORT, "slot"}, {SLOT, "item"}, {END}},
     [PACKET_SPAWN_POSITION]                = (Field[]){{INT, "x"}, {INT, "y"}, {INT, "z"}, {END}},
@@ -489,6 +491,11 @@ TEMPStr io_func_prefix_for_type(const Field* f)
     case LONG: {
         sprintf(str.data,
                 "be<%s>", fieldtype_to_cstr(f).data);
+        return str;
+    }
+    case WSTRING: {
+        sprintf(str.data,
+                 "<%s>", fieldtype_to_cstr(f).data);
         return str;
     }
     case STRING: {

@@ -66,7 +66,7 @@ public:
         pushStr("9999");
         pushStr("-1");
         message.resize(message.size() - 1);
-
+        
         write<uint8_t>(0xff);  // Kick packet
         writeV<short>(message);
         flush();
@@ -178,83 +178,34 @@ public:
     
     void handle_client()
     {
-        write<uint8_t>(0x01); // login packet
         peid = ((unsigned) rand()) & 0xfffffffu;
-        write<uint32_t>(peid);
-        write<std::string>("default");
-        write<uint8_t>(0); // gamemode
-        write<uint8_t>(0); // dimension
-        write<uint8_t>(3); // difficulty
-        write<uint8_t>(0); // not used
-        write<uint8_t>(20); // max players
-        flush();
+        Packets::PacketLogin
+            (peid, "default", 0, 0, 3, 20)
+            .send(*this);
 
-        write<uint8_t>(0xca); // player abilities
-        write<uint8_t>(2); // flags
-        write<uint8_t>(0); // fly speed
-        write<uint8_t>(0); // walking speed
+        Packets::PacketPlayerAbilities(2, 0, 0).send(*this);
+        Packets::PacketTimeUpdate(0, 0).send(*this);
+        Packets::PacketPlayerPositionAndLook
+            (0, 60, 61.8, 0, 0, 0, 0)
+            .send(*this);
+        Packets::PacketPlayerListItem(name, true, 3).send(*this);
+        Packets::PacketSetWindowItems(0, 45, std::vector<Slot>(45, Slot())).send(*this);
+        Packets::PacketSetSlot(-1, -1, Slot()).send(*this);
+        Packets::PacketSetSlot(0, 0, Slot()).send(*this);
 
-        write<uint8_t>(0x04); // time update
-        write<long>(0);
-        write<long>(0);
-
-        write<uint8_t>(0x0d); // player pos and look
-        writebe<double>(0);
-        writebe<double>(2000000);
-        writebe<double>(2000001.8);
-        writebe<double>(0);
-        writebe<float>(0);
-        writebe<float>(0);
-        write<uint8_t>(0);
-
-        write<uint8_t>(0xc9); // list item
-        write<std::string>(name);
-        write<bool>(true);
-        writebe<short>(50);
-
-        write<uint8_t>(0x68); // set window items
-        write<uint8_t>(0); // window id
-        writebe<short>(45); // number of slots
-        for (int i = 0; i < 45; ++i) {
-            writebe<short>(-1);
+        std::vector<Packets::ChunkMetaInformation> records;
+        for (int i = 0; i < 16; ++i) {
+            records.push_back({(i % 4) - 2,
+                              (i/4) - 2,
+                              0, 0});
         }
 
-        // clearing the cursor
+        Packets::PacketMapChunkBulk
+            (16, 0, 1, std::vector<uint8_t>(), records)
+            .send(*this);
+        Packets::PacketChatMessage(L"\xa7\x65To register write \xa7l/reg <password> <confirmPassword>").send(*this);
+        Packets::PacketChatMessage(L"Я сос биба").send(*this);
 
-        write<uint8_t>(0x67); // set slot
-        write<uint8_t>(-1);
-        writebe<short>(-1);
-        writebe<short>(-1);
-
-        write<uint8_t>(0x67); // set slot
-        write<uint8_t>(0);
-        writebe<short>(0);
-        writebe<short>(-1);
-
-
-        write<uint8_t>(0x38); // map chunk bulk
-        int n = 16;
-        writebe<short>(n);
-        writebe<int>(0);
-        write<uint8_t>(1);
-        for (int i = 0; i < n; ++i) {
-            int x = (i % 4) - 2;
-            int y = (i/4) - 2;
-            writebe<int>(x);
-            writebe<int>(y);
-            writebe<short>(0);
-            writebe<short>(0);
-        }
-        flush();
-
-        write<uint8_t>(0x03); // chat message
-        write<std::wstring>(L"\xa7\x65To register write \xa7l/reg <password> <confirmPassword>");
-        flush();
-
-        write<uint8_t>(0x03); // chat message
-        write<std::wstring>(L"Я сос биба");
-        flush();
-        
         sleep(50);
         waitForPacket(0x03);
     }
