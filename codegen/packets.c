@@ -624,14 +624,15 @@ void generate_getpacket_funcdecl(FILE* out)
 void generate_getpacket_funcdef(FILE* out)
 {
     fprintf(out, "Packets::Packet *Packets::getPacket(" BUFSTREAM_CLASSNAME "& stream)\n{\n");
-    fprintf(out, "    int id = stream.read<uint8_t>();\n    ");
+    fprintf(out, "    int id = stream.read<uint8_t>();\n"
+            "    switch (id) {\n");
     for (size_t i = 0; i < ARRAY_LEN(packetIds); ++i) {
-        if (i) fprintf(out, " else ");
-        fprintf(out, "if (Packets::%s::PACKET_ID == id) {\n"
-                "        return new Packets::%s(stream);\n"
-                "    }", classNames[packetIds[i]], classNames[packetIds[i]]);
+        fprintf(out, "    case Packets::%s::PACKET_ID: "
+                "return new Packets::%s(stream);\n",
+                classNames[packetIds[i]], classNames[packetIds[i]]);
     }
-    fprintf(out, " else return nullptr;\n}\n");
+    fprintf(out, "    }\n"
+            "    return nullptr;\n}\n\n");
 }
 
 int main(int argc, char** argv)
