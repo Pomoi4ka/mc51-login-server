@@ -31,6 +31,18 @@ std::ostream& operator<<(std::ostream& os, const BufStreamException& ex)
 }
 
 template<>
+std::wstring BufStream::read<std::wstring>()
+{
+    std::wstring s;
+    auto s_len = readbe<uint16_t>();
+    for (auto i = 0; i < s_len; ++i) {
+        s.push_back(readbe<uint16_t>());
+    }
+
+    return s;
+}
+
+template<>
 std::string BufStream::read<std::string>()
 {
     std::string s;

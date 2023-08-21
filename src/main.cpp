@@ -66,7 +66,7 @@ public:
         pushStr("9999");
         pushStr("-1");
         message.resize(message.size() - 1);
-        
+
         write<uint8_t>(0xff);  // Kick packet
         writeV<short>(message);
         flush();
@@ -89,7 +89,7 @@ public:
 
         if (h.protocolVer != PROTO_VER) return 0;
         name = h.username;
-        
+
         BIGNUM* bn = BN_new();
         int bits = 1200;
         if (BN_set_word(bn, RSA_F4) != 1) {
@@ -127,7 +127,7 @@ public:
         {
         std::vector<uint8_t> decryptedSharedSecret;
         std::vector<uint8_t> decryptedVToken;
-        
+
         Packets::PacketEncryptionKeyResponse re(*this);
         decryptedVToken.resize(RSA_size(rsa));
         int len = RSA_private_decrypt(re.verifyToken.size(), re.verifyToken.data(),
@@ -155,8 +155,8 @@ public:
         decryptedSharedSecret.resize(len);
 
         Packets::PacketEncryptionKeyResponse({}, {}).send(*this);
-        
-        
+
+
         setEncryption(decryptedSharedSecret);
 
         if (!expectPacket(0xcd)) {
@@ -171,11 +171,18 @@ public:
         return false;
     }
 
-    void waitForPacket(int packetId)
+    template <class T>
+    T* waitForPacket()
     {
-        
+        while (true) {
+            Packets::Packet* p = Packets::getPacket(*this);
+            if (p->getID() == T::PACKET_ID) {
+                return (T*) p;
+            }
+            delete p;
+        }
     }
-    
+
     void handle_client()
     {
         peid = ((unsigned) rand()) & 0xfffffffu;
@@ -206,8 +213,10 @@ public:
         Packets::PacketChatMessage(L"\xa7\x65To register write \xa7l/reg <password> <confirmPassword>").send(*this);
         Packets::PacketChatMessage(L"Я сос биба").send(*this);
 
-        sleep(50);
-        waitForPacket(0x03);
+        auto* m = waitForPacket<Packets::PacketChatMessage>();
+        printf("%ld\n", m->message.length());
+        printf("%s says %ls\n", name.c_str(), m->message.c_str());
+        delete m;
     }
 
     static void run(int sock)

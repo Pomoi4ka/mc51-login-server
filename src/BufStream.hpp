@@ -125,6 +125,8 @@ void BufStream::write<std::string>(std::string s);
 template<>
 std::string BufStream::read<std::string>();
 template <>
+std::wstring BufStream::read<std::wstring>();
+template <>
 void BufStream::write<std::wstring>(std::wstring s);
 
 #endif // BUF_STREAM_HPP_

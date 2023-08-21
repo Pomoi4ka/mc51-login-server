@@ -476,6 +476,7 @@ void generate_methods_decl(FILE* out, int id)
     fprintf(out, "    %s(" BUFSTREAM_CLASSNAME "& stream);\n",
             classNames[id]);
     fprintf(out, "    void send(" BUFSTREAM_CLASSNAME "& stream) const override;\n");
+    fprintf(out, "    int getID() const override;\n");
 }
 
 TEMPStr io_func_prefix_for_type(const Field* f)
@@ -517,7 +518,7 @@ TEMPStr io_func_prefix_for_type(const Field* f)
 
 void generate_class_decl(FILE* out, int id)
 {
-    fprintf(out, "class %s: private Packet {\n", classNames[id]);
+    fprintf(out, "class %s: public Packet {\n", classNames[id]);
     fprintf(out, "public:\n");
     generate_fields(out, id);
     generate_methods_decl(out, id);
@@ -552,7 +553,7 @@ TEMPStr owned_classes_construct_by_bufstr(const Field* fields)
     return str;
 }
 
-/* Standard methods as constructors (BufStream&; [fields]) and send method */ 
+/* Standard methods as constructors (BufStream&; [fields]) and send method */
 void generate_methods_defs_for_class(FILE* out, const char* namespace,
                                      const char* classname, int packetid, const Field* fields)
 {
@@ -563,6 +564,9 @@ void generate_methods_defs_for_class(FILE* out, const char* namespace,
         fprintf(out, "    this->%s = %s;\n", f->name, f->name);
     }
     fprintf(out, "}\n\n");
+
+    fprintf(out, "int %s::%s::getID() const\n{\n", namespace, classname);
+    fprintf(out, "    return this->PACKET_ID;\n}\n\n");
 
     fprintf(out, "%s::%s::%s(" BUFSTREAM_CLASSNAME "& stream)%s\n{\n", namespace, classname, classname,
             owned_classes_construct_by_bufstr(fields).data);
@@ -602,7 +606,7 @@ void generate_methods_defs_for_class(FILE* out, const char* namespace,
             fprintf(out, "    this->%s.send(stream);\n", f->name);
         else if (f->type == BYTEARRAY_NAMED)
             fprintf(out, "    stream.write(this->%s.data(), this->%s.size());\n",
-                    f->name, f->name);            
+                    f->name, f->name);
         else if (f->type == STRUCTARRAY || f->type == CLASSARRAY)
             fprintf(out, "    for (auto& n: this->%s)\n"
                     "        n.send(stream);\n", f->name);
@@ -610,6 +614,24 @@ void generate_methods_defs_for_class(FILE* out, const char* namespace,
             fprintf(out, "    stream.write%s(this->%s);\n", io_func_prefix_for_type(f).data, f->name);
     }
     fprintf(out, "    stream.flush();\n}\n\n");
+}
+
+void generate_getpacket_funcdecl(FILE* out)
+{
+    fprintf(out, "Packets::Packet *getPacket(" BUFSTREAM_CLASSNAME "& stream);\n");
+}
+
+void generate_getpacket_funcdef(FILE* out)
+{
+    fprintf(out, "Packets::Packet *Packets::getPacket(" BUFSTREAM_CLASSNAME "& stream)\n{\n");
+    fprintf(out, "    int id = stream.read<uint8_t>();\n    ");
+    for (size_t i = 0; i < ARRAY_LEN(packetIds); ++i) {
+        if (i) fprintf(out, " else ");
+        fprintf(out, "if (Packets::%s::PACKET_ID == id) {\n"
+                "        return new Packets::%s(stream);\n"
+                "    }", classNames[packetIds[i]], classNames[packetIds[i]]);
+    }
+    fprintf(out, " else return nullptr;\n}\n");
 }
 
 int main(int argc, char** argv)
@@ -671,28 +693,32 @@ int main(int argc, char** argv)
             "    void get(" BUFSTREAM_CLASSNAME "& stream);\n"
             "    void send(" BUFSTREAM_CLASSNAME "& stream) const;\n"
             "};\n\n");
-    
+
     fprintf(out,
             "class Packet {\n"
             "public:\n"
             "    virtual void send(" BUFSTREAM_CLASSNAME "& stream) const = 0;\n"
+            "    virtual int getID() const = 0;\n"
             "};\n");
-    
+
     for (size_t i = 0; i < ARRAY_LEN(packetIds); ++i) {
         generate_class_decl(out, packetIds[i]);
     }
+    generate_getpacket_funcdecl(out);
     fprintf(out, "}\n\n");
     fprintf(out, "#endif // PACKETS_HPP_\n");
     if (decloutput) fclose(out);
     if (defoutput) out = fopen(defoutput, "w");
-    
+
     fprintf(out, GENERATED_MARK "\n\n", progname);
-    
+
     if (decloutput) {
         const char* fname = decloutput + strlen(decloutput);
         while (fname > decloutput && fname[-1] != '/') fname--;
         fprintf(out, "#include <%s>\n\n", fname);
     }
+
+    generate_getpacket_funcdef(out);
 
     fprintf(out, "void Packets::" CHUNK_META_INFORMATION_STRUCT "::send(" BUFSTREAM_CLASSNAME "& stream) const\n{\n"
             "    stream.writebe<int>(chunkX);\n"
@@ -715,13 +741,13 @@ int main(int argc, char** argv)
             "    x = stream.read<uint8_t>();\n"
             "    y = stream.read<uint8_t>();\n"
             "    z = stream.read<uint8_t>();\n}\n\n");
-    
+
     for (size_t i = 0; i < ARRAY_LEN(packetIds); ++i) {
         generate_methods_defs_for_class
             (out, "Packets", classNames[packetIds[i]],
              packetIds[i], fields[packetIds[i]]);
     }
-    
+
     fclose(out);
     return 0;
 }
