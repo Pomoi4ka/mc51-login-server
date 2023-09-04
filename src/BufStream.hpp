@@ -3,6 +3,7 @@
 
 #include "Crypter.hpp"
 
+#include <poll.h>
 #include <memory>
 #include <vector>
 #include <cstdlib>
@@ -42,9 +43,13 @@ private:
 public:
     BufStream(int fd);
 
+    int getFd() const;
     void setEncryption(std::vector<uint8_t> sharedSecret);
-    bool isAbleToRead();
-    bool isStreamClosed();
+    bool willPossiblyBlockOnWrite() const;
+
+    pollfd getPollFd(int events) const;
+
+    bool isStreamClosed() const;
     bool flush(int all = false);
     int write(const void* buf, size_t n);
     size_t read(void* buf, size_t n);

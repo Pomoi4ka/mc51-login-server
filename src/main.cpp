@@ -4,12 +4,16 @@
 #include <thread>
 #include <vector>
 #include <sys/socket.h>
+#include <signal.h>
 #include <unistd.h>
 #include <cstring>
 #include <errno.h>
 #include <arpa/inet.h>
 #include <assert.h>
+#include <fcntl.h>
 #include <poll.h>
+
+#include <openssl/rand.h>
 
 #include "BufStream.hpp"
 #include "DataClasses.hpp"
@@ -23,6 +27,121 @@
 // TODO: config for the program
 // TODO: omit some packets which can lead to coodinate leaks
 // TODO: user notification system and ability to get individual login history
+
+class ServerTunnel: private BufStream {
+private:
+    BufStream& client;
+    std::string playerName;
+    Packets::PacketLogin lp;
+public:
+    int reservedEID;
+    int actualEID;
+
+    ServerTunnel(int serverSock, int reservedEID, BufStream& client, std::string name):
+        BufStream(serverSock),
+        client(client),
+        playerName(name),
+        lp(0, "", 0, 0, 0, 0)
+    {
+        this->reservedEID = reservedEID;
+    }
+
+    void respawn()
+    {
+        Packets::PacketRespawn((int8_t)lp.dimension, lp.difficulty, lp.gamemode, 256, lp.levelType).send(client);
+    }
+
+    Packets::Packet* login()
+    {
+        Packets::PacketHandshake(PROTO_VER, playerName, "localhost", // may be serverHost and serverPort should be not hardcoded
+                                 25565).send(*this);
+        if (read<uint8_t>() != Packets::PacketEncryptionKeyRequest::PACKET_ID) {
+            goto pidne;
+        }
+        {
+        Packets::PacketEncryptionKeyRequest er(*this);
+
+        const unsigned char* pk = er.publicKey.data();
+        RSA* rsa = d2i_RSA_PUBKEY(NULL, &pk, er.publicKey.size());
+
+        std::vector<uint8_t> ss(16);
+        RAND_bytes(ss.data(), ss.size());
+        std::vector<uint8_t> ess(RSA_size(rsa));
+        RSA_public_encrypt(ss.size(), ss.data(), ess.data(), rsa, RSA_PKCS1_PADDING);
+        std::vector<uint8_t> evk(RSA_size(rsa));
+        RSA_public_encrypt(er.verifyToken.size(),
+                           er.verifyToken.data(),
+                           evk.data(), rsa, RSA_PKCS1_PADDING);
+        Packets::PacketEncryptionKeyResponse(ess, evk).send(*this);
+
+        if (read<uint8_t>() != Packets::PacketEncryptionKeyResponse::PACKET_ID) {
+            goto pidne;
+        }
+
+        Packets::PacketEncryptionKeyResponse kr(*this);
+        if (kr.sharedSecret.size() != 0 ||
+            kr.verifyToken.size() != 0)
+            throw "Encryption error";
+        setEncryption(ss);
+        }
+        Packets::PacketClientStatuses(0).send(*this);
+        if (read<uint8_t>() != Packets::PacketLogin::PACKET_ID) {
+            goto pidne;
+        }
+
+        this->lp = Packets::PacketLogin(*this);
+
+        this->actualEID = lp.entityID;
+        return nullptr;
+    pidne:
+
+        return Packets::getPacket(*this);
+    }
+
+    void proxyAll()
+    {
+        client.flush();
+        this->flush();
+
+        enum Indices {
+            SERVER = 0,
+            CLIENT,
+        };
+
+        BufStream* streams[2];
+        streams[SERVER] = this;
+        streams[CLIENT] = &client;
+
+        pollfd pfds[2];
+        pfds[SERVER] = {this->getFd(), POLLIN, 0};
+        pfds[CLIENT] = {client.getFd(), POLLIN, 0};
+
+        Packets::Packet *p[2];
+        while (true) {
+            poll(pfds, sizeof(pfds)/sizeof(*pfds), -1);
+            for (auto i = 0; i < sizeof(pfds)/sizeof(*pfds); ++i) {
+                if (pfds[i].revents & POLLIN) {
+                    p[i] = Packets::getPacket(*streams[i]);
+                    if (i == SERVER)
+                        p[i]->substituteEntityID(actualEID, reservedEID);
+                    else
+                        p[i]->substituteEntityID(reservedEID, actualEID);
+                    printf("%s (%s)\n", Packets::PacketID2Cstr(p[i]->getID()),
+                           i ? "client" : "server");
+                    pfds[!i].events |= POLLOUT;
+                    pfds[i].events &= ~POLLIN;
+                }
+                if (pfds[i].revents & POLLOUT) {
+                    pfds[i].events &= ~POLLOUT;
+                    pfds[!i].events |= POLLIN;
+                    p[!i]->send(*streams[i]);
+                    delete p[!i];
+                }
+                pfds[i].revents = 0;
+            }
+        }
+    }
+};
 
 class ClientHandler: private BufStream {
 private:
@@ -60,11 +179,11 @@ public:
             for (auto& c: s) pushChar(c);
             pushChar(0);
         };
-        pushStr("" + PROTO_VER);
+        pushStr("51");
         pushStr("1.4.7");
         pushStr("Proxy says hello");
         pushStr("9999");
-        pushStr("-1");
+        pushStr("666");
         message.resize(message.size() - 1);
 
         write<uint8_t>(0xff);  // Kick packet
@@ -156,7 +275,6 @@ public:
 
         Packets::PacketEncryptionKeyResponse({}, {}).send(*this);
 
-
         setEncryption(decryptedSharedSecret);
 
         if (!expectPacket(0xcd)) {
@@ -174,6 +292,7 @@ public:
     template <class T>
     T* waitForPacket()
     {
+        try {
         while (true) {
             Packets::Packet* p = Packets::getPacket(*this);
             if (p->getID() == T::PACKET_ID) {
@@ -181,9 +300,12 @@ public:
             }
             delete p;
         }
+        } catch (BufStreamException e) {
+            return nullptr;
+        }
     }
 
-    void handle_client()
+    void handle_client(int addr, int port)
     {
         peid = ((unsigned) rand()) & 0xfffffffu;
         Packets::PacketLogin
@@ -211,18 +333,64 @@ public:
             (16, 0, 1, std::vector<uint8_t>(), records)
             .send(*this);
         Packets::PacketChatMessage(L"\xa7\x65To register write \xa7l/reg <password> <confirmPassword>").send(*this);
-        Packets::PacketChatMessage(L"Я сос биба").send(*this);
+
+#define PROXY_PREFIX L"\xa7\x35[PROXY]\xa7r"
 
         auto* m = waitForPacket<Packets::PacketChatMessage>();
-        printf("%ld\n", m->message.length());
-        printf("%s says %ls\n", name.c_str(), m->message.c_str());
+        if (m == nullptr) return;
+        // TODO: register/login things + db stuff and etc.
         delete m;
+        int sock = socket(AF_INET, SOCK_STREAM, 0);
+        sockaddr_in saddr;
+        saddr.sin_family = AF_INET;
+        saddr.sin_port = htons(port);
+        saddr.sin_addr.s_addr = addr;
+        try {
+        while (connect(sock, (sockaddr*)&saddr, sizeof(saddr)) < 0) {
+            Packets::PacketChatMessage(PROXY_PREFIX L" Sorry the main server is not available yet :(").send(*this);
+            for (int i = 5; i > 0; --i) {
+                wchar_t msg[512];
+                swprintf(msg, sizeof(msg)/sizeof(*msg), PROXY_PREFIX L" Trying to reconnect in %d seconds...", i);
+                Packets::PacketChatMessage(msg).send(*this);
+                sleep(1);
+            }
+        }
+        Packets::PacketChatMessage(PROXY_PREFIX L" Successfully connected...").send(*this);
+
+        ServerTunnel st(sock, peid, *this, name);
+        Packets::Packet* p = nullptr;
+        const char* ms = nullptr;
+        try{
+            p = st.login();
+        } catch (const char* m) {
+            ms = m;
+        }
+        if (p || ms) {
+            char msg[1024];
+            if (p && p->getID() == Packets::PacketDisconnect::PACKET_ID) {
+                sprintf(msg, "[PROXY] Login failed: %s", ((Packets::PacketDisconnect*) p)->reason.c_str());
+            } else if (ms) sprintf(msg, "[PROXY] Login failed: %s", ms);
+            else {
+                sprintf(msg, "[PROXY] Login failed");
+                if (p) printf("%d\n", p->getID());
+            }
+
+            Packets::PacketDisconnect(msg).send(*this);
+            if (p) delete p;
+            return;
+        }
+        st.respawn();
+        st.proxyAll();
+        } catch (BufStreamException) {}
+        close(sock);
     }
 
-    static void run(int sock)
+    static void run(int sock, int addr, int port)
     {
         ClientHandler handler(sock);
+        signal(SIGPIPE, SIG_IGN);
 
+        try {
         uint8_t packetId = handler.getPacketId();
         switch (packetId) {
         case 0xfe: {
@@ -231,12 +399,15 @@ public:
         case 0x02: {
             printf("Handshake\n");
             if (handler.handshake()) {
-                handler.handle_client();
+                handler.handle_client(addr, port);
             }
         } break;
         default:
             printf("Invalid initial packet 0x%x\n", packetId);
             break;
+        }
+        } catch (BufStreamException e) {
+            /* nothing to do */
         }
         close(sock);
     }
@@ -245,6 +416,10 @@ public:
 int main(int argc, char* argv[])
 {
     int port = 25565;
+    struct {
+        int address;
+        int port;
+    } server;
 
     auto nextArg = [&argc, &argv] () -> const char* {
         if (!argc--) return NULL;
@@ -255,19 +430,48 @@ int main(int argc, char* argv[])
 
     while (true) {
         const char* arg = nextArg();
+        auto missing_value = [&arg]() {
+            fprintf(stderr, "ERROR: argument `%s` expects value\n", arg);
+            exit(1);
+        };
+
         if (!arg) break;
         if (strcmp(arg, "-port") == 0) {
            const char* val = nextArg();
-           if (!val) {
-               fprintf(stderr, "ERROR: argument `%s` expects value\n", arg);
-               return 1;
-           }
+           if (!val) missing_value();
            char* endp;
            port = strtol(val, &endp, 10);
            if (*endp != '\0') {
                fprintf(stderr, "ERROR: invalid value for argument `%s`: `%s`\n", arg, val);
                return 1;
            }
+        } else if (strcmp(arg, "-server") == 0) {
+            const char* val = nextArg();
+            if (!val) missing_value();
+            char address[256] = {0};
+
+            const char* portStart = strchr(val, ':');
+            if (portStart == nullptr) {
+                fprintf(stderr, "ERROR: port is required\n");
+                exit(1);
+            }
+            size_t addrLen = portStart - val;
+            if (addrLen > sizeof(address)) {
+                fprintf(stderr, "ERROR: address couldn't be so big: %s\n", arg);
+            }
+
+            memcpy(address, val, addrLen);
+            portStart++;
+            if (inet_pton(AF_INET, address, &server.address) == 0) {
+                fprintf(stderr, "ERROR: invalid address: %s\n", address);
+                exit(1);
+            }
+            char* endp;
+            server.port = strtol(portStart, &endp, 10);
+            if (*endp != '\0' || server.port < 0 || server.port > 65535) {
+                fprintf(stderr, "ERROR: invalid port: %s\n", portStart);
+                exit(1);
+            }
         } else {
             fprintf(stderr, "ERROR: unknown argument: `%s`\n", arg);
             return 1;
@@ -308,7 +512,7 @@ int main(int argc, char* argv[])
             fprintf(stderr, "ERROR: could not accept(): %s\n",
                     strerror(errno));
         }
-        std::thread(ClientHandler::run, csock).detach();
+        std::thread(ClientHandler::run, csock, server.address, server.port).detach();
     }
 
     close(sock);

@@ -42,13 +42,72 @@ void Slot::send(BufStream& stream) const
     stream.writeV<short>(tags);
 }
 
-Metadata::Metadata(BufStream& stream)
+std::vector<uint8_t> Slot::to_bytes() const
 {
-    uint8_t b;
+    std::vector<uint8_t> result;
+    auto push = [&](uint8_t* p, size_t s = 1) {
+        for (size_t i = 0; i < s; ++i) {
+            result.push_back(p[i]);
+        }
+    };
+
+    auto pushbe = [&](uint8_t* p, size_t s = 1) {
+        for (int i = s-1; i >= 0; --i) {
+            result.push_back(p[i]);
+        }
+    };
+
+    pushbe((uint8_t*)&itemID, sizeof(short));
+    if (itemID < 0) return result;
+    pushbe((uint8_t*)&itemCount);
+    pushbe((uint8_t*)&itemDamage, sizeof(short));
+    if (tags.size() == 0) {
+        short tmp = -1;
+        pushbe((uint8_t*)&tmp, sizeof(short));
+        return result;
+    }
+    short tagsSize = tags.size();
+    pushbe((uint8_t*)&tagsSize, sizeof(short));
+    push((uint8_t*)tags.data(), tags.size());
+    return result;
+}
+
+Metadata::Metadata(BufStream& stream):
+    data()
+{
     do {
-        b = stream.read<uint8_t>();
+        uint8_t b = stream.read<uint8_t>();
         data.push_back(b);
-    } while (b != 127);
+        if (b == 127) break;
+        uint8_t type = (b >> 5u) & 0xffu;
+        auto push = [&](size_t typesize) {
+            for (size_t i = 0; i < typesize; ++i)
+                data.push_back(stream.read<uint8_t>());
+        };
+        switch (type) {
+        case 0: push(sizeof(uint8_t)); break;
+        case 1: push(sizeof(uint16_t)); break;
+        case 2: push(sizeof(uint32_t)); break;
+        case 3: push(sizeof(uint32_t)); break;
+        case 4: {
+            auto len = stream.readbe<uint16_t>();
+            data.push_back(((uint8_t*)&len)[1]);
+            data.push_back(((uint8_t*)&len)[0]);
+            for (size_t i = 0; i < len; ++i)
+                push(sizeof(uint16_t));
+        } break;
+        case 5: {
+            Slot s(stream);
+            for (auto& i: s.to_bytes())
+                data.push_back(i);
+        } break;
+        case 6: {
+            push(sizeof(uint32_t)); break;
+            push(sizeof(uint32_t)); break;
+            push(sizeof(uint32_t)); break;
+        } break;
+        }
+    } while (true);
 }
 
 Metadata::Metadata():

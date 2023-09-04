@@ -44,12 +44,12 @@ typedef enum {
     PACKET_ANIMATION,
     PACKET_ENTITY_ACTION,
     PACKET_SPAWN_NAMED_ENTITY,
-    PACKET_COLLECT_ITEM,
+    PACKET_COLLECT_ITEM = 0x16,
     PACKET_SPAWN_OBJECT,
     PACKET_SPAWN_MOB,
     PACKET_SPAWN_PAINTING,
     PACKET_SPAWN_EXPERIENCE_ORB,
-    PACKET_ENTITY_VELOCITY,
+    PACKET_ENTITY_VELOCITY = 0x1c,
     PACKET_DESTROY_ENTITY,
     PACKET_ENTITY,
     PACKET_RELATIVE_MOVE,
@@ -57,7 +57,7 @@ typedef enum {
     PACKET_ENTITY_LOOK_AND_RELATIVE_MOVE,
     PACKET_ENTITY_TELEPORT,
     PACKET_ENTITY_HEAD_LOOK,
-    PACKET_ENTITY_STATUS,
+    PACKET_ENTITY_STATUS = 0x26,
     PACKET_ATTACH_ENTITY,
     PACKET_ENTITY_METADATA,
     PACKET_ENTITY_EFFECT,
@@ -69,10 +69,10 @@ typedef enum {
     PACKET_BLOCK_ACTION,
     PACKET_BLOCK_BREAK_ANIMATION,
     PACKET_MAP_CHUNK_BULK,
-    PACKET_EXPLOSION,
+    PACKET_EXPLOSION = 0x3c,
     PACKET_SOUND_OR_PARTICLE,
     PACKET_NAMED_SOUND_EFFECT,
-    PACKET_CHANGE_GAME_STATE,
+    PACKET_CHANGE_GAME_STATE = 0x46,
     PACKET_SPAWN_GLOBAL_ENTITY,
     PACKET_OPEN_WINDOW = 0x64,
     PACKET_CLOSE_WINDOW,
@@ -339,7 +339,7 @@ const Field *(fields[]) = {
                                                        {FLOAT, "yaw"}, {FLOAT, "pitch"}, {BOOLEAN, "onGround"}, {END}},
     [PACKET_PLAYER_DIGGING]                = (Field[]){{BYTE, "status"}, {INT, "x"}, {BYTE, "y"}, {INT, "z"},
                                                        {BYTE, "face"}, {END}},
-    [PACKET_PLAYER_BLOCK_PLACEMENT]        = (Field[]){{INT, "x"}, {BYTE, "y"}, {BYTE, "direction"}, {SLOT, "heldItem"},
+    [PACKET_PLAYER_BLOCK_PLACEMENT]        = (Field[]){{INT, "x"}, {BYTE, "y"}, {INT, "z"}, {BYTE, "direction"}, {SLOT, "heldItem"},
                                                        {BYTE, "curPosX"}, {BYTE, "curPosY"}, {BYTE, "curPosZ"}, {END}},
     [PACKET_HELD_ITEM_CHANGE]              = (Field[]){{SHORT, "slotID"}, {END}},
     [PACKET_USE_BED]                       = (Field[]){{INT, "entityID"}, {BYTE, NULL}, {INT, "x"}, {BYTE, "y"}, {INT, "z"},
@@ -386,7 +386,7 @@ const Field *(fields[]) = {
                                                        {BYTEARRAY4, "records"}, {END}},
     [PACKET_BLOCK_CHANGE]                  = (Field[]){{INT, "x"}, {BYTE, "y"}, {INT, "z"}, {SHORT, "blockID"},
                                                        {BYTE, "blockMetadata"}, {END}},
-    [PACKET_BLOCK_ACTION]                  = (Field[]){{INT, "x"}, {BYTE, "y"}, {INT, "z"}, {BYTE, "byte1"},
+    [PACKET_BLOCK_ACTION]                  = (Field[]){{INT, "x"}, {SHORT, "y"}, {INT, "z"}, {BYTE, "byte1"},
                                                        {BYTE, "byte2"}, {SHORT, "blockID"}, {END}},
     [PACKET_BLOCK_BREAK_ANIMATION]         = (Field[]){{INT, "someWeirdEID"}, {INT, "x"}, {INT, "y"}, {INT, "z"},
                                                        {BYTE, "destroyStage"}, {END}},
@@ -396,7 +396,7 @@ const Field *(fields[]) = {
                                                        {END}},
     [PACKET_EXPLOSION]                     = (Field[]){{DOUBLE, "x"}, {DOUBLE, "y"}, {DOUBLE, "z"}, {FLOAT, "radius"},
                                                        {INT, "recordsCount"}, {STRUCTARRAY, "records", EXPLOSION_RECORD_STRUCT,
-                                                                               "recordsCount"}, {END}},
+                                                                               "recordsCount"}, {FLOAT, "playerMotionX"}, {FLOAT, "playerMotionY"}, {FLOAT, "playerMotionZ"}, {END}},
     [PACKET_SOUND_OR_PARTICLE]             = (Field[]){{INT, "EffID"}, {INT, "x"}, {BYTE, "y"}, {INT, "z"}, {INT, "data"},
                                                        {BOOLEAN, "notRelVol"}, {END}},
     [PACKET_NAMED_SOUND_EFFECT]            = (Field[]){{STRING, "soundName"}, {INT, "epX"}, {INT, "epY"}, {INT, "epZ"},
@@ -477,6 +477,7 @@ void generate_methods_decl(FILE* out, int id)
             classNames[id]);
     fprintf(out, "    void send(" BUFSTREAM_CLASSNAME "& stream) const override;\n");
     fprintf(out, "    int getID() const override;\n");
+    fprintf(out, "    void substituteEntityID(int from, int to) override;\n");
 }
 
 TEMPStr io_func_prefix_for_type(const Field* f)
@@ -568,23 +569,28 @@ void generate_methods_defs_for_class(FILE* out, const char* namespace,
     fprintf(out, "int %s::%s::getID() const\n{\n", namespace, classname);
     fprintf(out, "    return this->PACKET_ID;\n}\n\n");
 
-    fprintf(out, "%s::%s::%s(" BUFSTREAM_CLASSNAME "& stream)%s\n{\n", namespace, classname, classname,
-            owned_classes_construct_by_bufstr(fields).data);
+    fprintf(out, "%s::%s::%s(" BUFSTREAM_CLASSNAME "& stream)\n{\n",
+            namespace, classname, classname);
     for (const Field* f = fields; f->type != END; ++f) {
         if (f->name == NULL)
             fprintf(out, "    stream.read%s();\n", io_func_prefix_for_type(f).data);
-        else if (IS_TYPE_CLASS(f->type) && !IS_TYPE_ARRAY(f->type))
-            continue;
+        else if (f->type == METADATA)
+            fprintf(out, "    this->%s = Metadata(stream);\n", f->name);
+        else if (f->type == OBJECTDATA)
+            fprintf(out, "    this->%s = ObjectData(stream);\n", f->name);
+        else if (f->type == SLOT)
+            fprintf(out, "    this->%s = Slot(stream);\n", f->name);
         else if (f->type == BYTEARRAY_NAMED)
             fprintf(out, "    this->%s.resize(%s);\n"
                     "    stream.read(this->%s.data(), %s);\n",
                     f->name, f->argName, f->name,
                     f->argName);
         else if (f->type == STRUCTARRAY)
-            fprintf(out, "    this->%s.resize(this->%s);\n"
-                    "    for (auto i = 0; i < this->%s; ++i)\n"
-                    "        this->%s[i].get(stream);\n",
-                    f->name, f->argName2, f->argName2, f->name);
+            fprintf(out, "    for (auto i = 0; i < this->%s; ++i) {\n"
+                    "        %s t;\n        t.get(stream);\n"
+                    "        this->%s.push_back(t);\n"
+                    "    }\n",
+                    f->argName2, f->argName, f->name);
         else if (f->type == CLASSARRAY)
             fprintf(out, "    for (auto i = 0; i < this->%s; ++i)\n"
                     "        this->%s.push_back(stream);\n",
@@ -614,6 +620,20 @@ void generate_methods_defs_for_class(FILE* out, const char* namespace,
             fprintf(out, "    stream.write%s(this->%s);\n", io_func_prefix_for_type(f).data, f->name);
     }
     fprintf(out, "    stream.flush();\n}\n\n");
+    fprintf(out, "void %s::%s::substituteEntityID(int from, int to)\n{\n",
+            namespace, classname);
+    for (const Field* f = fields; f->type != END; ++f) {
+        if (f->name == NULL) continue;
+        if (strcmp(f->name, "entityID") == 0) {
+            fprintf(out, "    if (entityID == from) entityID = to;\n");
+        }
+        if (strcmp(classname, "PacketDestroyEntity") == 0) {
+            fprintf(out, "    for (auto& m: entityIDs) {\n"
+                    "        if (m == from) m = to;\n"
+                    "    }\n");
+        }
+    }
+    fprintf(out, "}\n\n");
 }
 
 void generate_getpacket_funcdecl(FILE* out)
@@ -632,7 +652,7 @@ void generate_getpacket_funcdef(FILE* out)
                 classNames[packetIds[i]], classNames[packetIds[i]]);
     }
     fprintf(out, "    }\n"
-            "    return nullptr;\n}\n\n");
+            "    assert(0 && \"unknown packet\");\n}\n\n");
 }
 
 int main(int argc, char** argv)
@@ -673,6 +693,7 @@ int main(int argc, char** argv)
     fprintf(out, "#ifndef PACKETS_HPP_\n");
     fprintf(out, "#define PACKETS_HPP_\n\n");
     fprintf(out, "#include <cstdlib>\n");
+    fprintf(out, "#include <cassert>\n");
     fprintf(out, "#include <cstdint>\n");
     fprintf(out, "#include <string>\n");
     fprintf(out, "#include <vector>\n\n");
@@ -700,7 +721,11 @@ int main(int argc, char** argv)
             "public:\n"
             "    virtual void send(" BUFSTREAM_CLASSNAME "& stream) const = 0;\n"
             "    virtual int getID() const = 0;\n"
+            "    virtual void substituteEntityID(int from, int to) = 0;\n"
+            "    virtual ~Packet();\n"
             "};\n");
+
+    fprintf(out, "const char* PacketID2Cstr(int id);\n");
 
     for (size_t i = 0; i < ARRAY_LEN(packetIds); ++i) {
         generate_class_decl(out, packetIds[i]);
@@ -719,7 +744,18 @@ int main(int argc, char** argv)
         fprintf(out, "#include <%s>\n\n", fname);
     }
 
+    fprintf(out, "const char* Packets::PacketID2Cstr(int id)\n{\n"
+            "    switch (id) {\n");
+    for (int i = 0; i < ARRAY_LEN(packetIds); ++i) {
+        fprintf(out, "    case Packets::%s::PACKET_ID: return \"%s\";\n",
+                classNames[packetIds[i]], classNames[packetIds[i]]);
+    }
+    fprintf(out, "    default: return \"unknown packet\";\n"
+            "    }\n}\n\n");
+
     generate_getpacket_funcdef(out);
+
+    fprintf(out, "Packets::Packet::~Packet() {};\n\n");
 
     fprintf(out, "void Packets::" CHUNK_META_INFORMATION_STRUCT "::send(" BUFSTREAM_CLASSNAME "& stream) const\n{\n"
             "    stream.writebe<int>(chunkX);\n"

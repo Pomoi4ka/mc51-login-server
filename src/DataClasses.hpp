@@ -19,6 +19,7 @@ public:
     Slot(BufStream& stream);
     Slot();
     void send(BufStream& stream) const;
+    std::vector<uint8_t> to_bytes() const;
 };
 
 // Format source: http://web.archive.org/web/20130118192941/http://www.wiki.vg/Entities#Entity_Metadata_Format

@@ -30,6 +30,11 @@ std::ostream& operator<<(std::ostream& os, const BufStreamException& ex)
     return os;
 }
 
+int BufStream::getFd() const
+{
+    return fd;
+}
+
 template<>
 std::wstring BufStream::read<std::wstring>()
 {
@@ -72,17 +77,34 @@ void BufStream::write<std::wstring>(std::wstring s)
     }
 }
 
+pollfd BufStream::getPollFd(int events) const
+{
+    pollfd pfd;
+    memset(&pfd, 0, sizeof(pfd));
+
+    pfd.fd = getFd();
+    pfd.events |= (POLLIN & events);
+    if (willPossiblyBlockOnWrite()) {
+        pfd.events |= (POLLOUT & events);
+    }
+
+    return pfd;
+}
+
 int BufStream::write(const void* buf, size_t n)
 {
-    ssize_t pos = 0;
+    size_t pos = 0;
 
-    while ((size_t) pos < n) {
-        if (wB.pos == writeBuffer.size()) wB.pos = 0;
+    while (pos < n) {
+        if (wB.pos == writeBuffer.size()) {
+            if (!flush()) return 0;
+            wB.pos = 0;
+        }
         if (wB.avail == writeBuffer.size() &&
             !flush()) {
             return 0;
         }
-        size_t avail = writeBuffer.size() - wB.avail;
+        size_t avail = writeBuffer.size() - wB.pos;
         if (avail > n - pos) avail = n - pos;
         if (crypter) {
             crypter->encrypt(&writeBuffer[wB.pos], &((char*)buf)[pos], avail);
@@ -101,9 +123,11 @@ size_t BufStream::read(void* buf, size_t n)
     size_t pos = 0;
 
     while ((size_t) pos < n) {
-        if (!rB.avail && fetch() <= 0) {
-            isClosed = true;
-            return pos;
+        if (!rB.avail) {
+            if (fetch() <= 0) {
+                isClosed = true;
+                return pos;
+            }
         }
         size_t cnt;
         if (n - pos > rB.avail) {
@@ -148,12 +172,13 @@ void BufStream::setEncryption(std::vector<uint8_t> sharedSecret)
     this->crypter = std::unique_ptr<Crypter>(new Crypter(sharedSecret));
 }
 
-bool BufStream::isAbleToRead()
+bool BufStream::willPossiblyBlockOnWrite() const
 {
-    return rB.avail || !isStreamClosed();
+    return wB.pos == writeBuffer.size() ||
+        wB.avail == writeBuffer.size();
 }
 
-bool BufStream::isStreamClosed()
+bool BufStream::isStreamClosed() const
 {
     return isClosed;
 }
